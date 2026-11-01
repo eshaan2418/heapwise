@@ -1,0 +1,66 @@
+cmake_minimum_required(VERSION 3.24)
+project(heapwise VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+option(HW_BUILD_TESTS "Build tests" ON)
+option(HW_BUILD_BENCH "Build benchmarks" ON)
+set(HW_SANITIZE "" CACHE STRING "Sanitizer: address, thread, undefined, or empty")
+
+set(HW_WARNINGS -Wall -Wextra -Wpedantic -Werror -Wshadow -Wconversion -Wno-sign-conversion)
+
+if(HW_SANITIZE STREQUAL "address")
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
+  add_link_options(-fsanitize=address,undefined)
+elseif(HW_SANITIZE STREQUAL "thread")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
+elseif(HW_SANITIZE STREQUAL "undefined")
+  add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all)
+  add_link_options(-fsanitize=undefined)
+endif()
+
+find_package(Threads REQUIRED)
+
+add_library(heapwise STATIC src/heapwise.cpp src/os.cpp)
+target_include_directories(heapwise PUBLIC include PRIVATE src)
+target_compile_options(heapwise PRIVATE ${HW_WARNINGS} -fno-exceptions -fno-rtti)
+target_link_libraries(heapwise PUBLIC Threads::Threads)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_library(heapwise_override SHARED src/heapwise.cpp src/os.cpp src/override.cpp)
+  target_include_directories(heapwise_override PRIVATE include src)
+  target_compile_definitions(heapwise_override PRIVATE HW_OVERRIDE=1)
+  target_compile_options(heapwise_override PRIVATE ${HW_WARNINGS} -fno-exceptions -fno-rtti -ftls-model=initial-exec)
+  target_link_libraries(heapwise_override PRIVATE Threads::Threads)
+endif()
+
+include(FetchContent)
+
+if(HW_BUILD_TESTS)
+  find_package(GTest CONFIG QUIET)
+  if(NOT GTest_FOUND)
+    FetchContent_Declare(googletest URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+                         URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+  endif()
+  enable_testing()
+  add_executable(heapwise_tests tests/test_classes.cpp tests/test_basic.cpp tests/test_threads.cpp
+                                tests/test_random.cpp)
+  target_include_directories(heapwise_tests PRIVATE src)
+  target_compile_options(heapwise_tests PRIVATE ${HW_WARNINGS})
+  target_link_libraries(heapwise_tests PRIVATE heapwise GTest::gtest_main)
+  include(GoogleTest)
+  gtest_discover_tests(heapwise_tests DISCOVERY_TIMEOUT 60)
+endif()
+
+if(HW_BUILD_BENCH AND HW_SANITIZE STREQUAL "")
+  add_subdirectory(bench)
+endif()

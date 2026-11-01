@@ -1,0 +1,183 @@
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <random>
+#include <thread>
+#include <vector>
+
+#include "heapwise/heapwise.h"
+
+namespace {
+
+struct Msg {
+  unsigned char* p;
+  std::size_t n;
+  unsigned char tag;
+};
+
+void Fill(const Msg& m) {
+  for (std::size_t i = 0; i < m.n; ++i) m.p[i] = static_cast<unsigned char>(m.tag ^ i);
+}
+bool Ok(const Msg& m) {
+  for (std::size_t i = 0; i < m.n; ++i) {
+    if (m.p[i] != static_cast<unsigned char>(m.tag ^ i)) return false;
+  }
+  return true;
+}
+
+// Bounded MPMC queue used only by the tests.
+class Queue {
+ public:
+  void Push(Msg m) {
+    std::unique_lock<std::mutex> lk(mu_);
+    not_full_.wait(lk, [&] { return q_.size() < 1024; });
+    q_.push_back(m);
+    not_empty_.notify_one();
+  }
+  bool Pop(Msg* out) {
+    std::unique_lock<std::mutex> lk(mu_);
+    not_empty_.wait(lk, [&] { return !q_.empty() || closed_; });
+    if (q_.empty()) return false;
+    *out = q_.front();
+    q_.pop_front();
+    not_full_.notify_one();
+    return true;
+  }
+  void Close() {
+    std::lock_guard<std::mutex> lk(mu_);
+    closed_ = true;
+    not_empty_.notify_all();
+  }
+
+ private:
+  std::mutex mu_;
+  std::condition_variable not_full_, not_empty_;
+  std::deque<Msg> q_;
+  bool closed_ = false;
+};
+
+TEST(Threads, ProducerConsumerCrossThreadFree) {
+  constexpr int kProducers = 4, kConsumers = 4, kPerProducer = 40000;
+  Queue q;
+  std::atomic<int> bad{0}, freed{0};
+  std::vector<std::thread> consumers;
+  for (int c = 0; c < kConsumers; ++c) {
+    consumers.emplace_back([&] {
+      Msg m{};
+      while (q.Pop(&m)) {
+        if (!Ok(m)) bad.fetch_add(1);
+        hw_free(m.p);
+        freed.fetch_add(1);
+      }
+    });
+  }
+  std::vector<std::thread> producers;
+  for (int p = 0; p < kProducers; ++p) {
+    producers.emplace_back([&, p] {
+      std::mt19937 rng(static_cast<unsigned>(p));
+      for (int i = 0; i < kPerProducer; ++i) {
+        const std::size_t n = 1 + rng() % (i % 50 == 0 ? 70000 : 512);
+        Msg m{static_cast<unsigned char*>(hw_malloc(n)), n, static_cast<unsigned char>(rng())};
+        Fill(m);
+        q.Push(m);
+        if (i % 1000 == 0) hw_collect(0);  // producers reclaim remote frees
+      }
+    });
+  }
+  for (auto& t : producers) t.join();
+  q.Close();
+  for (auto& t : consumers) t.join();
+  EXPECT_EQ(bad.load(), 0);
+  EXPECT_EQ(freed.load(), kProducers * kPerProducer);
+}
+
+TEST(Threads, ExitedThreadsSegmentsAreAdoptedAndReclaimed) {
+  hw_collect(1);
+  std::vector<Msg> leftovers;
+  std::mutex mu;
+  for (int round = 0; round < 4; ++round) {
+    std::vector<std::thread> ts;
+    for (int t = 0; t < 8; ++t) {
+      ts.emplace_back([&, t] {
+        std::vector<Msg> mine;
+        for (int i = 0; i < 20000; ++i) {
+          const std::size_t n = 16 + static_cast<std::size_t>((i * 37 + t) % 2000);
+          Msg m{static_cast<unsigned char*>(hw_malloc(n)), n, static_cast<unsigned char>(i)};
+          Fill(m);
+          mine.push_back(m);
+        }
+        // Free every other block locally; hand the rest to the main thread.
+        std::lock_guard<std::mutex> lk(mu);
+        for (std::size_t i = 0; i < mine.size(); ++i) {
+          if (i % 2 == 0) {
+            hw_free(mine[i].p);
+          } else {
+            leftovers.push_back(mine[i]);
+          }
+        }
+      });
+    }
+    for (auto& t : ts) t.join();
+  }
+  hw_stats mid{};
+  hw_get_stats(&mid);
+  EXPECT_GT(mid.segments_abandoned, 0u) << "exited threads left live blocks behind";
+
+  // Free from the main thread: these are remote frees into abandoned segments.
+  for (const Msg& m : leftovers) {
+    ASSERT_TRUE(Ok(m));
+    hw_free(m.p);
+  }
+  // A new thread adopts abandoned segments when it needs memory.
+  std::thread([] {
+    std::vector<void*> v;
+    for (int i = 0; i < 1000; ++i) v.push_back(hw_malloc(64));
+    for (void* p : v) hw_free(p);
+  }).join();
+  hw_collect(1);
+  hw_stats after{};
+  hw_get_stats(&after);
+  EXPECT_EQ(after.segments_abandoned, 0u);
+  EXPECT_LE(after.segments_mapped, 2u);
+}
+
+TEST(Threads, LarsonStyleExchange) {
+  constexpr int kThreads = 8, kSlots = 2048, kIters = 60000;
+  struct Slot {
+    std::atomic<unsigned char*> p{nullptr};
+    std::atomic<std::size_t> n{0};
+  };
+  std::vector<Slot> slots(kSlots);
+  std::atomic<int> bad{0};
+  std::vector<std::thread> ts;
+  for (int t = 0; t < kThreads; ++t) {
+    ts.emplace_back([&, t] {
+      std::mt19937 rng(static_cast<unsigned>(t * 7919));
+      for (int i = 0; i < kIters; ++i) {
+        const std::size_t n = 16 + rng() % 1000;
+        auto* p = static_cast<unsigned char*>(hw_malloc(n));
+        std::memset(p, static_cast<int>(n & 0xff), n);
+        // Store size in the first bytes so the freeing thread can verify the block.
+        std::memcpy(p, &n, sizeof(n) < n ? sizeof(n) : n);
+        Slot& s = slots[rng() % kSlots];
+        unsigned char* old = s.p.exchange(p, std::memory_order_acq_rel);
+        if (old != nullptr) {
+          std::size_t on = 0;
+          std::memcpy(&on, old, sizeof(on));
+          if (on < 16 || on > 1016 || old[on - 1] != static_cast<unsigned char>(on & 0xff)) bad.fetch_add(1);
+          hw_free(old);
+        }
+      }
+    });
+  }
+  for (auto& t : ts) t.join();
+  for (auto& s : slots) hw_free(s.p.load());
+  EXPECT_EQ(bad.load(), 0);
+}
+
+}  // namespace

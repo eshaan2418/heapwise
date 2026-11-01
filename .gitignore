@@ -1,0 +1,7 @@
+build*/
+bench/traces/*.raw
+bench/traces/*.hwt
+!bench/traces/fixture.hwt
+.cache/
+compile_commands.json
+*.dSYM

@@ -1,0 +1,5 @@
+Checks: >
+  -*,bugprone-*,performance-*,modernize-use-nullptr,modernize-use-override,readability-braces-around-statements,
+  -bugprone-easily-swappable-parameters,-bugprone-reserved-identifier,-performance-no-int-to-ptr
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(src|include)/.*'
