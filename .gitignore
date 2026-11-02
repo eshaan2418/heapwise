@@ -5,3 +5,4 @@ bench/traces/*.hwt
 .cache/
 compile_commands.json
 *.dSYM
+NOTES.md
