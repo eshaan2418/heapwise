@@ -39,7 +39,8 @@ lint:
 format:
 	clang-format -i src/*.cpp src/*.h include/heapwise/*.h tests/*.cpp bench/*.cpp bench/*.h
 
-demo: build
+demo:
+	@$(MAKE) -s build > /dev/null
 	@bench/scripts/demo.sh $(BUILD)
 
 clean:

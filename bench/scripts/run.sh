@@ -20,7 +20,10 @@ wait_quiet() {
   done
   echo "machine never became quiet; aborting" >&2; exit 1
 }
+# WORKLOADS restricts the run to a space-separated subset (e.g. "larson prodcon").
+WORKLOADS=${WORKLOADS:-"replay larson prodcon churn fragment"}
 run() {  # args after backend
+  [[ " $WORKLOADS " == *" $1 "* ]] || return 0
   for rep in $(seq 1 "$REPS"); do
     wait_quiet
     for b in $BACKENDS; do

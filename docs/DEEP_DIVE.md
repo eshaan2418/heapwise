@@ -89,8 +89,10 @@ heuristic needs no extra state on the remote path.
 Without hysteresis, one local free into a full page moves it to the queue head, and the next
 malloc takes that one block. On the malloc after that, the slow path finds the page empty
 again and moves it back. In random-replacement workloads (Larson) most pages hover at full,
-so nearly every malloc/free pair paid two list moves and a slow-path call. Single-threaded
-Larson went from about 80 ms to about 62 ms with the threshold.
+so nearly every malloc/free pair paid two list moves and a slow-path call. In the ablation
+(`bench/results/ablation-summary.md`, 7 runs each), removing the threshold makes Larson 19%
+slower single-threaded (71.4 vs 60.1 ms median) and 18% slower with 9 threads (100.5 vs
+84.9 ms). It has no measurable effect on the CPython and SQLite traces.
 
 The cost: up to 1/8 of a full page's blocks can sit unused until more frees arrive or the
 page is collected by `hw_collect`. That bounds the extra memory at 12.5% of pages that are
@@ -146,7 +148,7 @@ per ~4 KiB of new allocations.
 ### 12. On macOS, why read `TPIDRRO_EL0` instead of using `thread_local`?
 
 On macOS, every `thread_local` access in compiled code goes through a TLV descriptor call
-(`_tlv_get_addr`). The profile showed it at about 5% of single-threaded Larson. pthread keys
+(`_tlv_get_addr`). It showed up in the profile of single-threaded Larson. pthread keys
 on Apple arm64 live in an array whose base is in `TPIDRRO_EL0`; Apple's inline
 `_pthread_getspecific_direct` reads it this way. `CurrentHeap` reads our key's slot directly:
 one `mrs` and one load.
@@ -155,8 +157,9 @@ The risk is that this layout is not a documented ABI. `GlobalInit` therefore sto
 value with `pthread_setspecific` and checks it can be read back through the direct path.
 Only then does it publish the slot index in `g_tsd_slot` (a single atomic word, so readers
 never see a half-initialised key). If the check ever fails, every lookup falls back to
-`thread_local`. The measured gain was small (~2% on single-threaded Larson), and the design
-keeps the fallback as the default on every other platform.
+`thread_local`. In the ablation the gain is workload-dependent: none on Larson (59.8 vs 60.1 ms), 16% on the
+SQLite trace (2.5 vs 2.9 ms) and 12% on the CPython trace (62.4 vs 69.8 ms median, with
+overlapping CIs). The fallback stays the default on every other platform.
 
 ### 13. Why is there no `malloc` override on macOS?
 
@@ -194,8 +197,8 @@ Limits:
 
 ### 15. Where does heapwise lose, and why?
 
-See the README table for numbers. On the replays and on Larson, mimalloc and jemalloc are
-faster. Likely reasons, roughly in order:
+See the README table for numbers. mimalloc is faster on all four trace replays (by 8–31%);
+jemalloc is faster on Larson and on producer/consumer. Likely reasons, roughly in order:
 
 1. mimalloc keeps a separate `local_free` list and swaps it in only when `free` runs dry.
    That batches slow-path work and makes it more predictable; heapwise reuses freed blocks
@@ -205,7 +208,8 @@ faster. Likely reasons, roughly in order:
 3. heapwise checks the segment-map bit on every free (one extra cache line). That buys a clean
    abort on foreign pointers instead of silent corruption, and it is a deliberate choice.
 4. Huge allocations (the ffmpeg trace has frames up to 11 MB) go through a mutex-protected
-   cache and `madvise`, which costs more than jemalloc's extent reuse.
+   cache and `madvise` on every insertion, which likely explains part of mimalloc's 12% lead
+   on that trace.
 
 ### 16. What would break first in production?
 

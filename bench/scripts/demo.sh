@@ -12,5 +12,5 @@ for line in sys.stdin:
 echo "Replaying 6,000 real SQLite allocation calls (bench/traces/fixture.hwt):"
 for b in "$BUILD"/bench/bench_*; do "$b" replay bench/traces/fixture.hwt; done | fmt
 echo
-echo "4 producer/consumer pairs, 1M messages each, every free on another thread:"
-for b in "$BUILD"/bench/bench_*; do "$b" prodcon 4 1000000; done | fmt
+echo "Larson server simulation, 4 threads, 4M malloc/free pairs, windows handed between threads:"
+for b in "$BUILD"/bench/bench_*; do "$b" larson 4 1000000; done | fmt
