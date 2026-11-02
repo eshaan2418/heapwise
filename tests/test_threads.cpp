@@ -237,3 +237,52 @@ TEST(Threads, FreeIntoAbandonedSegmentAdoptsIt) {
 }
 
 }  // namespace
+
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace {
+
+// fork() while other threads hammer the allocator: the child must be able to allocate
+// (atfork handlers keep the global locks consistent).
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define HW_TSAN 1
+#endif
+#endif
+
+TEST(Threads, ForkWhileOtherThreadsAllocate) {
+#if defined(HW_TSAN)
+  GTEST_SKIP() << "ThreadSanitizer does not support threads in a child of a multithreaded fork";
+#endif
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> ts;
+  for (int t = 0; t < 4; ++t) {
+    ts.emplace_back([&] {
+      while (!stop.load()) {
+        std::vector<void*> v;
+        for (int i = 0; i < 64; ++i) v.push_back(hw_malloc(i % 2 == 0 ? 64 : 400000));
+        for (void* p : v) hw_free(p);
+        std::thread([] { hw_free(hw_malloc(32)); }).join();  // heap pool + abandon paths
+      }
+    });
+  }
+  for (int i = 0; i < 20; ++i) {
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+      std::thread child([] {
+        for (int k = 0; k < 1000; ++k) hw_free(hw_malloc(static_cast<std::size_t>(k) * 997 % 500000));
+      });
+      child.join();
+      _exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  }
+  stop.store(true);
+  for (auto& t : ts) t.join();
+}
+
+}  // namespace

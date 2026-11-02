@@ -113,8 +113,21 @@ constexpr std::uint64_t UnitMask(std::uint32_t first, std::uint32_t units) {
 
 void ThreadExit(void* value);
 
+// fork() from a multithreaded parent must not leave a global lock held in the child.
+void ForkPrepare() {
+  g_heap_mu.lock();
+  g_abandon_mu.lock();
+  g_huge_cache.mu.lock();
+}
+void ForkRelease() {
+  g_huge_cache.mu.unlock();
+  g_abandon_mu.unlock();
+  g_heap_mu.unlock();
+}
+
 void GlobalInit() {
-  g_init_ok = SegmapInit() && pthread_key_create(&g_key, ThreadExit) == 0;
+  g_init_ok = SegmapInit() && pthread_key_create(&g_key, ThreadExit) == 0 &&
+              pthread_atfork(ForkPrepare, ForkRelease, ForkRelease) == 0;
 #if HW_DIRECT_TSD
   if (g_init_ok) {
     int probe = 0;
