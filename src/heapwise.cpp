@@ -128,7 +128,7 @@ void ForkRelease() {
 void GlobalInit() {
   g_init_ok = SegmapInit() && pthread_key_create(&g_key, ThreadExit) == 0 &&
               pthread_atfork(ForkPrepare, ForkRelease, ForkRelease) == 0;
-#if HW_DIRECT_TSD
+#if HW_DIRECT_TSD && !defined(HW_ABLATE_DIRECT_TSD)  // ablation: always use thread_local
   if (g_init_ok) {
     int probe = 0;
     pthread_setspecific(g_key, &probe);
@@ -654,10 +654,12 @@ void hw_free(void* ptr) {
     // A full page rejoins the allocation queue only once 1/8 of its blocks are free.
     // Without this hysteresis, a single free into a full page moves it to the queue head, the
     // next malloc drains it, and it bounces straight back to the full list.
-    if (HW_UNLIKELY(p->used == 0 ||
-                    (p->in_full && static_cast<std::uint32_t>(p->capacity - p->used) >= (p->reserved >> 3u)))) {
-      hw::FreeLocalSlow(h, s, p);
-    }
+#if defined(HW_ABLATE_HYSTERESIS)  // benchmark ablation: rejoin the queue on any free
+    const bool unfull = p->in_full;
+#else
+    const bool unfull = p->in_full && static_cast<std::uint32_t>(p->capacity - p->used) >= (p->reserved >> 3u);
+#endif
+    if (HW_UNLIKELY(p->used == 0 || unfull)) hw::FreeLocalSlow(h, s, p);
     return;
   }
   // Cross-thread free: push onto the page's lock-free stack. The owner collects the whole
