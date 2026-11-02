@@ -27,6 +27,7 @@ traces: build
 
 bench: build
 	@test -f $(TRACES)/python-ast.hwt || $(MAKE) traces
+	bench/scripts/env.sh > bench/results/ENV.md
 	bench/scripts/run.sh $(BUILD) $(TRACES) bench/results/raw.jsonl $(REPS)
 	python3 bench/scripts/summarize.py bench/results/raw.jsonl | tee bench/results/summary.md
 

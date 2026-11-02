@@ -9,10 +9,23 @@ NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc)
 HALF=$(( NCPU / 2 ))
 : > "$OUT"
 TIMEOUT=$(command -v gtimeout || command -v timeout)
+MAX_LOAD=${MAX_LOAD:-3}
+load1() { if [[ -r /proc/loadavg ]]; then cut -d' ' -f1 /proc/loadavg; else sysctl -n vm.loadavg | awk '{print $2}'; fi; }
+# Benchmarks must run on a quiet machine: wait (up to 45 min) for the 1-minute load average
+# to drop below MAX_LOAD, and record the load next to every result.
+wait_quiet() {
+  for _ in $(seq 1 90); do
+    awk -v l="$(load1)" -v m="$MAX_LOAD" 'BEGIN { exit !(l < m) }' && return 0
+    echo "load $(load1) >= $MAX_LOAD, waiting" >&2; sleep 30
+  done
+  echo "machine never became quiet; aborting" >&2; exit 1
+}
 run() {  # args after backend
   for rep in $(seq 1 "$REPS"); do
+    wait_quiet
     for b in $BACKENDS; do
-      "$TIMEOUT" 600 "$BUILD/bench/bench_$b" "$@" | sed "s/}$/,\"rep\":$rep}/" >> "$OUT"
+      l=$(load1)
+      "$TIMEOUT" 600 "$BUILD/bench/bench_$b" "$@" | sed "s/}$/,\"rep\":$rep,\"load1\":$l}/" >> "$OUT"
     done
   done
 }
