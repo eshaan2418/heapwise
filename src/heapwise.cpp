@@ -129,7 +129,7 @@ void GlobalInit() {
 Heap* HeapNew() {
   std::lock_guard<std::mutex> lock(g_heap_mu);
   if (g_heap_pool == nullptr) {
-    constexpr std::size_t kChunk = 256 * 1024;
+    constexpr std::size_t kChunk = std::size_t{256} * 1024;
     void* mem = OsMapAligned(kChunk, kOsPage);
     if (mem == nullptr) return nullptr;
     auto* heaps = static_cast<Heap*>(mem);
@@ -641,7 +641,8 @@ void hw_free(void* ptr) {
     // A full page rejoins the allocation queue only once 1/8 of its blocks are free.
     // Without this hysteresis, a single free into a full page moves it to the queue head, the
     // next malloc drains it, and it bounces straight back to the full list.
-    if (HW_UNLIKELY(p->used == 0 || (p->in_full && p->capacity - p->used >= (p->reserved >> 3)))) {
+    if (HW_UNLIKELY(p->used == 0 ||
+                    (p->in_full && static_cast<std::uint32_t>(p->capacity - p->used) >= (p->reserved >> 3u)))) {
       hw::FreeLocalSlow(h, s, p);
     }
     return;

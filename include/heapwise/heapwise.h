@@ -43,12 +43,12 @@ int hw_owns(const void* ptr);
 void hw_collect(int force);
 
 typedef struct hw_stats {
-  uint64_t segments_mapped;    // live 4 MiB segments
-  uint64_t huge_mapped;        // live dedicated huge mappings
-  uint64_t bytes_mapped;       // total bytes currently mapped from the OS
-  uint64_t segments_abandoned; // segments waiting to be adopted
-  uint64_t os_maps;            // cumulative mmap calls
-  uint64_t os_unmaps;          // cumulative munmap calls
+  uint64_t segments_mapped;     // live 4 MiB segments
+  uint64_t huge_mapped;         // live dedicated huge mappings
+  uint64_t bytes_mapped;        // total bytes currently mapped from the OS
+  uint64_t segments_abandoned;  // segments waiting to be adopted
+  uint64_t os_maps;             // cumulative mmap calls
+  uint64_t os_unmaps;           // cumulative munmap calls
 } hw_stats;
 
 void hw_get_stats(hw_stats* out);

@@ -8,10 +8,11 @@ BACKENDS=$(ls "$BUILD"/bench | sed -n 's/^bench_\(.*\)$/\1/p' | sort)
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc)
 HALF=$(( NCPU / 2 ))
 : > "$OUT"
+TIMEOUT=$(command -v gtimeout || command -v timeout)
 run() {  # args after backend
   for rep in $(seq 1 "$REPS"); do
     for b in $BACKENDS; do
-      gtimeout 600 "$BUILD/bench/bench_$b" "$@" | sed "s/}$/,\"rep\":$rep}/" >> "$OUT"
+      "$TIMEOUT" 600 "$BUILD/bench/bench_$b" "$@" | sed "s/}$/,\"rep\":$rep}/" >> "$OUT"
     done
   done
 }

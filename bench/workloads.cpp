@@ -203,8 +203,7 @@ int Churn(int threads, int rounds) {
   }
   for (auto& t : ts) t.join();
   const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
-  Report("churn", std::to_string(threads) + "t", secs, static_cast<std::uint64_t>(threads) * rounds * kBatch * 2,
-         base);
+  Report("churn", std::to_string(threads) + "t", secs, static_cast<std::uint64_t>(threads) * rounds * kBatch * 2, base);
   return 0;
 }
 
@@ -243,8 +242,7 @@ int Fragment(int millions) {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::fprintf(stderr, "usage: %s replay <trace.hwt> | larson|prodcon|churn <threads> <n> | fragment <M>\n",
-                 argv[0]);
+    std::fprintf(stderr, "usage: %s replay <trace.hwt> | larson|prodcon|churn <threads> <n> | fragment <M>\n", argv[0]);
     return 2;
   }
   const std::string w = argv[1];

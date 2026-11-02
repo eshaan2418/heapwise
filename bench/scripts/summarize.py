@@ -1,4 +1,7 @@
-"""Summarise bench/scripts/run.sh output: median, mean +/- 95% CI, and peak RSS per backend."""
+"""Summarise bench/scripts/run.sh output: median, mean +/- 95% CI, and peak RSS per backend.
+
+Peak RSS is the process-wide maximum (getrusage), including the allocator's own startup
+footprint and the benchmark driver's buffers (identical across backends)."""
 
 import json
 import statistics
@@ -24,7 +27,7 @@ def main(path):
             order.append(key)
         groups[key + (d["backend"],)].append(d)
     backends = sorted({k[2] for k in groups})
-    print("| workload | backend | median time (ms) | mean +/- 95% CI (ms) | max (ms) | Mops/s (median) | peak RSS over base (MB, median) | vs system |")
+    print("| workload | backend | median time (ms) | mean +/- 95% CI (ms) | max (ms) | Mops/s (median) | peak RSS (MB, median) | vs system |")
     print("|---|---|---:|---:|---:|---:|---:|---:|")
     for w, det in order:
         sys_med = statistics.median(r["seconds"] for r in groups[(w, det, "system")]) if (w, det, "system") in groups else None
@@ -34,7 +37,7 @@ def main(path):
                 continue
             ms = [r["seconds"] * 1000 for r in rs]
             mops = statistics.median(r["mops_per_s"] for r in rs)
-            rss = statistics.median(r["peak_rss_mb"] - r["rss_base_mb"] for r in rs)
+            rss = statistics.median(r["peak_rss_mb"] for r in rs)
             med = statistics.median(ms)
             speed = f"{sys_med * 1000 / med:.2f}x" if sys_med else "-"
             print(f"| {w} {det} | {b} | {med:.1f} | {statistics.mean(ms):.1f} +/- {ci95(ms):.1f} | {max(ms):.1f} | {mops:.1f} | {rss:.1f} | {speed} |")

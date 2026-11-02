@@ -116,5 +116,4 @@ void SegmapSet(const void* seg, bool live) {
   }
 }
 
-
 }  // namespace hw

@@ -23,8 +23,8 @@ constexpr std::size_t kNumClasses = 56;
 constexpr std::size_t kMaxSmallSize = 262144;  // largest size class
 constexpr std::size_t kMaxAlign = kSegmentSize / 2;
 constexpr std::size_t kMinAlign = 16;
-constexpr std::size_t kCacheLine = 128;  // Apple M-series reports 128 bytes
-constexpr std::size_t kHugeHeader = kUnitSize;  // huge object starts 64 KiB into its mapping
+constexpr std::size_t kCacheLine = 128;                       // Apple M-series reports 128 bytes
+constexpr std::size_t kHugeHeader = kUnitSize;                // huge object starts 64 KiB into its mapping
 constexpr std::uint64_t kAllUsableUnits = ~std::uint64_t{1};  // unit 0 holds the header
 
 static_assert(kUnitsPerSegment == 64, "free-unit bitmap is a single uint64_t");
@@ -67,8 +67,8 @@ enum class PageKind : std::uint8_t { kFree = 0, kSmall = 1, kTail = 2 };
 // every unit stores the index of its span head so lookup is branch-free.
 // All fields except `remote` (kept in Segment::remote) are touched only by the owning heap.
 struct Page {
-  Block* free;          // owner-local free list
-  Page* next;           // links in the heap's class queue or full list
+  Block* free;  // owner-local free list
+  Page* next;   // links in the heap's class queue or full list
   Page* prev;
   std::uint8_t* start;  // first block
   std::uint32_t block_size;
@@ -88,7 +88,7 @@ struct alignas(kCacheLine) RemoteSlot {
   std::atomic<Block*> head;
 };
 
-enum class SegmentKind : std::uint32_t { kNormal = 0, kHuge = 1 };
+enum class SegmentKind : std::uint8_t { kNormal = 0, kHuge = 1 };
 
 struct alignas(kCacheLine) Segment {
   std::atomic<Heap*> owner;  // nullptr when abandoned or huge
@@ -111,10 +111,10 @@ struct Heap {
   std::array<std::uint32_t, kNumClasses> full_len;
   std::array<std::uint32_t, kNumClasses> new_since_scan;
   std::array<std::uint32_t, kNumClasses> scan_budget;  // pages the last full-list scan could not reclaim
-  Segment* avail;     // segments with at least one free unit
-  Segment* full_segs; // segments with no free units
-  Segment* cache;     // one empty segment kept to avoid mmap churn
-  Heap* next_free;    // global heap pool
+  Segment* avail;                                      // segments with at least one free unit
+  Segment* full_segs;                                  // segments with no free units
+  Segment* cache;                                      // one empty segment kept to avoid mmap churn
+  Heap* next_free;                                     // global heap pool
 };
 
 inline Segment* SegmentOf(const void* p) {
@@ -128,8 +128,8 @@ inline std::size_t UnitOf(const Segment* s, const void* p) {
 // --- OS layer (os.cpp) ---------------------------------------------------
 void* OsMapAligned(std::size_t size, std::size_t align);
 void OsUnmap(void* p, std::size_t size);
-void OsPurge(void* p, std::size_t size);    // tell the OS the pages are unused
-void OsReuse(void* p, std::size_t size);    // undo OsPurge accounting (macOS)
+void OsPurge(void* p, std::size_t size);  // tell the OS the pages are unused
+void OsReuse(void* p, std::size_t size);  // undo OsPurge accounting (macOS)
 void OsAdviseHuge(void* p, std::size_t size);
 
 // Global bitmap of live segment base addresses (1 bit per 4 MiB of address space).

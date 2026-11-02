@@ -112,7 +112,8 @@ int main(int argc, char** argv) {
 
   std::sort(alloc_sizes.begin(), alloc_sizes.end());
   auto pct = [&](double q) {
-    return alloc_sizes.empty() ? 0 : alloc_sizes[static_cast<std::size_t>(q * static_cast<double>(alloc_sizes.size() - 1))];
+    return alloc_sizes.empty() ? 0
+                               : alloc_sizes[static_cast<std::size_t>(q * static_cast<double>(alloc_sizes.size() - 1))];
   };
   std::printf(
       "{\"ops\":%zu,\"allocs\":%u,\"threads\":%llu,\"peak_live_mb\":%.1f,\"size_p50\":%llu,\"size_p90\":%llu,"
