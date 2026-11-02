@@ -255,6 +255,13 @@ TEST(Threads, ForkWhileOtherThreadsAllocate) {
 #if defined(HW_TSAN)
   GTEST_SKIP() << "ThreadSanitizer does not support threads in a child of a multithreaded fork";
 #endif
+#if defined(__APPLE__) && defined(__has_feature)
+#if __has_feature(address_sanitizer)
+  // The macOS ASan runtime aborts children forked from a multithreaded parent on CI runners;
+  // the test still runs natively on both platforms and under ASan on Linux.
+  GTEST_SKIP() << "macOS AddressSanitizer: fork from a multithreaded process is unreliable";
+#endif
+#endif
   std::atomic<bool> stop{false};
   std::vector<std::thread> ts;
   for (int t = 0; t < 4; ++t) {
