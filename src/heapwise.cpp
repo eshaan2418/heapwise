@@ -32,10 +32,10 @@ bool g_init_ok = false;
 // the dyld TLV thunk that every `thread_local` access goes through on macOS. The layout is
 // verified at startup (see GlobalInit) and we fall back to thread_local if the check fails.
 // -1 until verified; a single atomic word so a reader never sees a torn or stale key.
-std::atomic<long> g_tsd_slot{-1};
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #define HW_DIRECT_TSD 1
+std::atomic<long> g_tsd_slot{-1};
 inline void** TsdBase() {
   std::uintptr_t t = 0;
   __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(t));
