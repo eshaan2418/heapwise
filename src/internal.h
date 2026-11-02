@@ -98,6 +98,7 @@ struct alignas(kCacheLine) Segment {
   std::size_t mapped_size;
   SegmentKind kind;
   bool in_full_list;
+  bool abandoned;  // on the global abandoned list (guarded by the abandoned-list mutex)
   std::array<Page, kUnitsPerSegment> pages;
   std::array<RemoteSlot, kUnitsPerSegment> remote;
 };
@@ -109,6 +110,7 @@ struct Heap {
   std::array<Page*, kNumClasses> full;   // pages with no free or carvable blocks
   std::array<std::uint32_t, kNumClasses> full_len;
   std::array<std::uint32_t, kNumClasses> new_since_scan;
+  std::array<std::uint32_t, kNumClasses> scan_budget;  // pages the last full-list scan could not reclaim
   Segment* avail;     // segments with at least one free unit
   Segment* full_segs; // segments with no free units
   Segment* cache;     // one empty segment kept to avoid mmap churn
@@ -131,9 +133,22 @@ void OsReuse(void* p, std::size_t size);    // undo OsPurge accounting (macOS)
 void OsAdviseHuge(void* p, std::size_t size);
 
 // Global bitmap of live segment base addresses (1 bit per 4 MiB of address space).
+constexpr int kAddressBits = 48;
+constexpr std::size_t kSegmapBits = std::size_t{1} << (kAddressBits - kSegmentShift);
+extern std::atomic<std::atomic<std::uint64_t>*> g_segmap;
+
 bool SegmapInit();
 void SegmapSet(const void* seg, bool live);
-bool SegmapContains(const void* seg);
+
+// Inline: on the free path. Acquire pairs with the release in SegmapInit; on arm64 and x86
+// both compile to a plain load.
+inline bool SegmapContains(const void* seg) {
+  const std::uintptr_t idx = reinterpret_cast<std::uintptr_t>(seg) >> kSegmentShift;
+  if (idx >= kSegmapBits) return false;
+  auto* words = g_segmap.load(std::memory_order_acquire);
+  if (words == nullptr) return false;
+  return (words[idx >> 6].load(std::memory_order_relaxed) >> (idx & 63)) & 1;
+}
 
 struct OsCounters {
   std::atomic<std::uint64_t> maps{0};

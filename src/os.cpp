@@ -10,11 +10,7 @@ namespace hw {
 
 namespace {
 
-constexpr int kAddressBits = 48;
-constexpr std::size_t kSegmapBits = std::size_t{1} << (kAddressBits - kSegmentShift);
 constexpr std::size_t kSegmapWords = kSegmapBits / 64;
-
-std::atomic<std::atomic<std::uint64_t>*> g_segmap{nullptr};
 OsCounters g_counters;
 
 void* RawMap(std::size_t size) {
@@ -31,6 +27,8 @@ void RawUnmap(void* p, std::size_t size) {
 }
 
 }  // namespace
+
+std::atomic<std::atomic<std::uint64_t>*> g_segmap{nullptr};
 
 OsCounters& Counters() { return g_counters; }
 
@@ -118,12 +116,5 @@ void SegmapSet(const void* seg, bool live) {
   }
 }
 
-bool SegmapContains(const void* seg) {
-  const std::uintptr_t idx = reinterpret_cast<std::uintptr_t>(seg) >> kSegmentShift;
-  if (idx >= kSegmapBits) return false;
-  auto* words = g_segmap.load(std::memory_order_acquire);
-  if (words == nullptr) return false;
-  return (words[idx >> 6].load(std::memory_order_relaxed) >> (idx & 63)) & 1;
-}
 
 }  // namespace hw

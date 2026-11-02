@@ -181,3 +181,59 @@ TEST(Threads, LarsonStyleExchange) {
 }
 
 }  // namespace
+
+namespace {
+
+// Regression: remote frees into full pages must be reclaimed promptly. An earlier rescan
+// heuristic let a producer's heap double every cycle (2.4 GB for ~1 MB of live data).
+TEST(Threads, ProducerHeapStaysBoundedUnderRemoteFrees) {
+  hw_collect(1);
+  constexpr std::size_t kCap = 4096;
+  std::vector<std::atomic<void*>> ring(kCap);
+  std::atomic<std::size_t> head{0}, tail{0};
+  constexpr std::size_t kItems = 3000000;
+  std::atomic<std::uint64_t> peak{0};
+  std::thread consumer([&] {
+    for (std::size_t i = 0; i < kItems; ++i) {
+      while (head.load(std::memory_order_acquire) == i) std::this_thread::yield();
+      hw_free(ring[i % kCap].load(std::memory_order_relaxed));
+      tail.store(i + 1, std::memory_order_release);
+    }
+  });
+  std::thread producer([&] {
+    for (std::size_t i = 0; i < kItems; ++i) {
+      void* m = hw_malloc(32 + (i * 2654435761u) % 480);
+      while (i - tail.load(std::memory_order_acquire) == kCap) std::this_thread::yield();
+      ring[i % kCap].store(m, std::memory_order_relaxed);
+      head.store(i + 1, std::memory_order_release);
+      if (i % 65536 == 0) {
+        hw_stats st{};
+        hw_get_stats(&st);
+        if (st.bytes_mapped > peak.load()) peak.store(st.bytes_mapped);
+      }
+    }
+  });
+  producer.join();
+  consumer.join();
+  EXPECT_LT(peak.load(), std::uint64_t{64} << 20) << "live data is ~1 MB; mapped memory should stay small";
+}
+
+// A thread that frees into a segment abandoned by an exited thread adopts it, so the memory
+// is released as soon as the last block is freed, without an explicit hw_collect(1).
+TEST(Threads, FreeIntoAbandonedSegmentAdoptsIt) {
+  hw_collect(1);
+  std::vector<void*> ptrs;
+  std::thread([&] {
+    for (int i = 0; i < 100000; ++i) ptrs.push_back(hw_malloc(128));
+  }).join();
+  hw_stats mid{};
+  hw_get_stats(&mid);
+  EXPECT_GT(mid.segments_abandoned, 0u);
+  for (void* p : ptrs) hw_free(p);
+  hw_stats after{};
+  hw_get_stats(&after);
+  EXPECT_EQ(after.segments_abandoned, 0u);
+  EXPECT_LT(after.bytes_mapped, mid.bytes_mapped);
+}
+
+}  // namespace

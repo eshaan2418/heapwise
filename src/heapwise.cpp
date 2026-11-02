@@ -27,6 +27,32 @@ pthread_once_t g_once = PTHREAD_ONCE_INIT;
 pthread_key_t g_key;
 bool g_init_ok = false;
 
+// On Apple arm64, pthread keys live in a per-thread array addressed by TPIDRRO_EL0; this is
+// how libpthread's inline _pthread_getspecific_direct works. Reading our slot directly avoids
+// the dyld TLV thunk that every `thread_local` access goes through on macOS. The layout is
+// verified at startup (see GlobalInit) and we fall back to thread_local if the check fails.
+// -1 until verified; a single atomic word so a reader never sees a torn or stale key.
+std::atomic<long> g_tsd_slot{-1};
+
+#if defined(__APPLE__) && defined(__aarch64__)
+#define HW_DIRECT_TSD 1
+inline void** TsdBase() {
+  std::uintptr_t t = 0;
+  __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(t));
+  return reinterpret_cast<void**>(t);
+}
+#else
+#define HW_DIRECT_TSD 0
+#endif
+
+inline Heap* CurrentHeap() {
+#if HW_DIRECT_TSD
+  const long slot = g_tsd_slot.load(std::memory_order_relaxed);
+  if (HW_LIKELY(slot >= 0)) return static_cast<Heap*>(TsdBase()[slot]);
+#endif
+  return tl_heap;
+}
+
 std::mutex g_heap_mu;
 Heap* g_heap_pool = nullptr;
 
@@ -87,7 +113,18 @@ constexpr std::uint64_t UnitMask(std::uint32_t first, std::uint32_t units) {
 
 void ThreadExit(void* value);
 
-void GlobalInit() { g_init_ok = SegmapInit() && pthread_key_create(&g_key, ThreadExit) == 0; }
+void GlobalInit() {
+  g_init_ok = SegmapInit() && pthread_key_create(&g_key, ThreadExit) == 0;
+#if HW_DIRECT_TSD
+  if (g_init_ok) {
+    int probe = 0;
+    pthread_setspecific(g_key, &probe);
+    const bool layout_ok = TsdBase()[g_key] == &probe;
+    pthread_setspecific(g_key, nullptr);
+    if (layout_ok) g_tsd_slot.store(static_cast<long>(g_key), std::memory_order_relaxed);
+  }
+#endif
+}
 
 Heap* HeapNew() {
   std::lock_guard<std::mutex> lock(g_heap_mu);
@@ -124,7 +161,7 @@ HW_NOINLINE Heap* HeapInit() {
 }
 
 inline Heap* GetHeap() {
-  Heap* h = tl_heap;
+  Heap* h = CurrentHeap();
   return HW_LIKELY(h != nullptr) ? h : HeapInit();
 }
 
@@ -281,17 +318,28 @@ void MoveFromFull(Heap* h, Page* p) {
   ListPush(h->pages[c], p);
 }
 
-// Rescan full pages for cross-thread frees. Called only after as many new pages were
-// allocated in this class as there are full pages, which keeps the cost amortised O(1).
+// Rescan full pages for cross-thread frees. A scan is triggered once the heap has allocated
+// as many fresh pages as the previous scan failed to reclaim, so a scan's O(full pages) cost
+// is paid for by an equal number of page allocations: amortised O(1) per page, and pages
+// emptied by remote frees are found promptly when most of them do get reclaimed.
 void ScanFull(Heap* h, std::uint32_t c) {
   Page* p = h->full[c];
   while (p != nullptr) {
     Page* next = p->next;
-    PageCollect(SegmentOf(p), p);
-    if (p->free != nullptr) MoveFromFull(h, p);
+    Segment* s = SegmentOf(p);
+    PageCollect(s, p);
+    if (p->free != nullptr) {
+      MoveFromFull(h, p);
+      // Keep one empty page per class; return the rest of the emptied pages to their segment.
+      if (p->used == 0 && p->next != nullptr) {
+        ListRemove(h->pages[c], p);
+        SegmentFreeSpan(h, s, p);
+      }
+    }
     p = next;
   }
   h->new_since_scan[c] = 0;
+  h->scan_budget[c] = h->full_len[c];
 }
 
 // Take ownership of an abandoned segment and enqueue its usable pages.
@@ -335,10 +383,25 @@ Segment* PopAbandoned() {
   std::lock_guard<std::mutex> lock(g_abandon_mu);
   Segment* s = g_abandoned;
   if (s != nullptr) {
-    g_abandoned = s->next;
+    ListRemove(g_abandoned, s);
+    s->abandoned = false;
     g_abandoned_count.fetch_sub(1, std::memory_order_relaxed);
   }
   return s;
+}
+
+// A thread freeing into an abandoned segment takes it over, so the rest of its frees into
+// that segment are local (no atomics) and empty pages can be released immediately.
+// The caller holds a live block in `s`, so `s` cannot be unmapped underneath us.
+HW_NOINLINE bool TryAdoptOnFree(Heap* h, Segment* s) {
+  {
+    std::lock_guard<std::mutex> lock(g_abandon_mu);
+    if (!s->abandoned) return false;
+    ListRemove(g_abandoned, s);
+    s->abandoned = false;
+    g_abandoned_count.fetch_sub(1, std::memory_order_relaxed);
+  }
+  return Adopt(h, s);
 }
 
 Segment* SegmentAcquire(Heap* h) {
@@ -388,7 +451,7 @@ HW_NOINLINE void* MallocSlow(Heap* h, std::uint32_t c) {
       MoveToFull(h, p);
       p = next;
     }
-    if (round == 0 && h->full_len[c] > 0 && h->new_since_scan[c] >= h->full_len[c]) {
+    if (round == 0 && h->full_len[c] > 0 && h->new_since_scan[c] >= h->scan_budget[c]) {
       ScanFull(h, c);
       continue;
     }
@@ -525,9 +588,8 @@ void ThreadExit(void* value) {
       } else {
         s->owner.store(nullptr, std::memory_order_release);
         std::lock_guard<std::mutex> lock(g_abandon_mu);
-        s->prev = nullptr;
-        s->next = g_abandoned;
-        g_abandoned = s;
+        ListPush(g_abandoned, s);
+        s->abandoned = true;
         g_abandoned_count.fetch_add(1, std::memory_order_relaxed);
       }
       s = next;
@@ -569,12 +631,19 @@ void hw_free(void* ptr) {
   }
   Page* p = &s->pages[s->pages[hw::UnitOf(s, ptr)].head];
   auto* b = static_cast<Block*>(ptr);
-  Heap* h = hw::tl_heap;
-  if (HW_LIKELY(h != nullptr && s->owner.load(std::memory_order_relaxed) == h)) {
+  Heap* h = hw::CurrentHeap();
+  Heap* owner = s->owner.load(std::memory_order_relaxed);
+  if (HW_UNLIKELY(owner == nullptr && h != nullptr) && hw::TryAdoptOnFree(h, s)) owner = h;
+  if (HW_LIKELY(h != nullptr && owner == h)) {
     b->next = p->free;
     p->free = b;
     --p->used;
-    if (HW_UNLIKELY(p->used == 0 || p->in_full)) hw::FreeLocalSlow(h, s, p);
+    // A full page rejoins the allocation queue only once 1/8 of its blocks are free.
+    // Without this hysteresis, a single free into a full page moves it to the queue head, the
+    // next malloc drains it, and it bounces straight back to the full list.
+    if (HW_UNLIKELY(p->used == 0 || (p->in_full && p->capacity - p->used >= (p->reserved >> 3)))) {
+      hw::FreeLocalSlow(h, s, p);
+    }
     return;
   }
   // Cross-thread free: push onto the page's lock-free stack. The owner collects the whole
@@ -652,7 +721,7 @@ int hw_posix_memalign(void** out, size_t alignment, size_t size) {
 int hw_owns(const void* ptr) { return ptr != nullptr && hw::SegmapContains(hw::SegmentOf(ptr)) ? 1 : 0; }
 
 void hw_collect(int force) {
-  Heap* h = force ? hw::GetHeap() : hw::tl_heap;
+  Heap* h = force ? hw::GetHeap() : hw::CurrentHeap();
   if (h != nullptr) {
     if (force) {
       while (Segment* s = hw::PopAbandoned()) hw::Adopt(h, s);
